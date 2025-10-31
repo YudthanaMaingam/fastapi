@@ -1,0 +1,9 @@
+# functions/requirements.txt
+fastapi
+uvicorn
+firebase-admin
+firebase-functions
+scikit-learn
+pandas
+numpy
+joblib

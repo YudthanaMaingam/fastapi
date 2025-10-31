@@ -1,0 +1,62 @@
+{
+  "genres": [
+    "Classical",
+    "Country",
+    "EDM",
+    "Folk",
+    "Gospel",
+    "Hip hop",
+    "Jazz",
+    "K pop",
+    "Latin",
+    "Lofi",
+    "Metal",
+    "Pop",
+    "R&B",
+    "Rap",
+    "Rock",
+    "Video game music"
+  ],
+  "freq_map": {
+    "Never": 0,
+    "Rarely": 1,
+    "Sometimes": 2,
+    "Very frequently": 3
+  },
+  "label_names": [
+    "Classical",
+    "Country",
+    "EDM",
+    "Folk",
+    "Gospel",
+    "Hip hop",
+    "Jazz",
+    "K pop",
+    "Latin",
+    "Lofi",
+    "Metal",
+    "Pop",
+    "R&B",
+    "Rap",
+    "Rock",
+    "Video game music"
+  ],
+  "name_to_index": {
+    "Classical": 0,
+    "Country": 1,
+    "EDM": 2,
+    "Folk": 3,
+    "Gospel": 4,
+    "Hip hop": 5,
+    "Jazz": 6,
+    "K pop": 7,
+    "Latin": 8,
+    "Lofi": 9,
+    "Metal": 10,
+    "Pop": 11,
+    "R&B": 12,
+    "Rap": 13,
+    "Rock": 14,
+    "Video game music": 15
+  }
+}
