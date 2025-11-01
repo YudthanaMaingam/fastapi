@@ -80,7 +80,7 @@ def preprocess_input(user_input, all_genres_list):
     """
     # --- เริ่มโค้ดตัวอย่างจาก Notebook ---
     # (นี่คือโค้ดจาก Cell 2 ใน Notebook ของคุณ)
-    freq_map = {'Never': 0, 'Rarely': 1, 'Sometimes': 2, 'Frequently': 3, 'Very frequently': 4}
+    freq_map = {'Never': 0, 'Rarely': 1, 'Sometimes': 2, 'Very frequently': 3}
     
     # แปลง user_input (dict) ให้อยู่ในรูป DataFrame แถวเดียว
     # (ต้องแน่ใจว่า all_genres_list คือ list ของชื่อแนวเพลงทั้งหมด)
