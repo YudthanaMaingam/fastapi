@@ -1,0 +1,6 @@
+pycache/*.pyc
+.vscode/
+.idea/
+.DS_Store
+venv/.venv/
+serviceAccountKey.json
