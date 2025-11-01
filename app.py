@@ -7,7 +7,7 @@ import json
 # --- FastAPI Imports ---
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware  # ✅ [เพิ่มใหม่] 1. Import CORS
 
 # --- Firebase Admin Imports ---
 import firebase_admin
@@ -35,18 +35,15 @@ try:
     X_train_knn = np.load(os.path.join(BASE_DIR, 'X_train.npy'))
     y_train_knn = np.load(os.path.join(BASE_DIR, 'y_train.npy'))
     
-    # ✅ [แก้ไข] BUG FIX: เราต้อง "เปิด" ไฟล์ JSON แล้ว "ดึง" ลิสต์ genres ออกมา
+    # (โค้ดที่แก้เรื่อง 16 features ครั้งก่อน)
     with open(os.path.join(BASE_DIR, 'model_data.json'), 'r') as f:
-        # โหลด "ตู้เอกสาร" ทั้งหมด (ที่มี 4 ลิ้นชัก)
         json_data = json.load(f) 
-        # ดึงเฉพาะ "แฟ้ม" ที่เราต้องการ (ที่มี 16 แนวเพลง)
         all_genres_list = json_data['genres'] 
 
     from sklearn.neighbors import NearestNeighbors
     knn_model = NearestNeighbors(n_neighbors=10, metric='cosine')
     knn_model.fit(X_train_knn)
     
-    # ✅ [แก้ไข] พิมพ์ Log เพื่อยืนยัน
     print(f"All models loaded successfully! Found {len(all_genres_list)} genres.") 
 
 except Exception as e:
@@ -55,14 +52,13 @@ except Exception as e:
 # ----------------------------------------------------
 # 3. 📋 Copy Helper Functions from Notebook
 # ----------------------------------------------------
-# (ฟังก์ชันเหล่านี้ถูกต้องแล้ว ไม่ต้องแก้)
+# (ฟังก์ชัน preprocess_input, knn_recommend_topk, 
+#  logreg_recommend, recommend_with_strategy อยู่ตรงนี้)
+# (ผมย่อไว้นะครับ)
 
-def preprocess_input(user_input, all_genres_list): # (all_genres_list จะได้รับ 16 รายการแล้ว)
+def preprocess_input(user_input, all_genres_list):
     freq_map = {'Never': 0, 'Rarely': 1, 'Sometimes': 2, 'Very frequently': 3}
-    
-    # ✅ [แก้ไข] BUG FIX: ตรงนี้จะสร้าง "กรอบรูป 16 ช่อง" ได้ถูกต้อง
-    df_data = {genre: 0 for genre in all_genres_list} 
-    
+    df_data = {genre: 0 for genre in all_genres_list}
     for genre, freq in user_input.items():
         if genre in df_data:
             if isinstance(freq, str):
@@ -92,9 +88,7 @@ def logreg_recommend(user_vector, k=5):
     return list(top_k_genres)
 
 def recommend_with_strategy(user_input_dict, strategy="auto", k=5):
-    # ✅ [แก้ไข] BUG FIX: ส่ง all_genres_list (16 รายการ) ไปให้
     user_vector_df = preprocess_input(user_input_dict, all_genres_list) 
-    
     num_ratings = sum(1 for v in user_input_dict.values() if (isinstance(v, str) and v != 'Never') or (isinstance(v, int) and v > 0))
     current_strategy = strategy
     if strategy == "auto":
@@ -118,17 +112,21 @@ def recommend_with_strategy(user_input_dict, strategy="auto", k=5):
 # ----------------------------------------------------
 app = FastAPI()
 
-# (CORS Middleware - ถูกต้องแล้ว)
-origins = ["*"]
+# ✅ [เพิ่มใหม่] 2. เพิ่มการตั้งค่า CORS (บอก "ยาม" ให้ปล่อย Flutter เข้ามา)
+origins = [
+    "*"  # อนุญาตทั้งหมด (เหมาะสำหรับ Development)
+    # "http://localhost",
+    # "http://localhost:8080",
+]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"], # อนุญาตทุก Method (POST, GET)
+    allow_headers=["*"], # อนุญาตทุก Header
 )
 
-# (Endpoint - ถูกต้องแล้ว)
+# (โค้ด Endpoint ของคุณ เหมือนเดิม)
 class RequestBody(BaseModel):
     userId: str
 
@@ -148,15 +146,11 @@ async def handle_recommendation_request(body: RequestBody):
         if not user_preferences:
             raise HTTPException(status_code=404, detail="User preferences (Map) not found")
 
-        # ✅ [แก้ไข] BUG FIX: ไม่ต้องส่ง all_genres_list อีก
-        # เพราะฟังก์ชัน recommend_with_strategy จะไปใช้ตัวแปร global (all_genres_list) ที่เราโหลดไว้แล้ว
         recommendations = recommend_with_strategy(user_preferences, strategy="auto")
-        
         return {"recommendations": recommendations}
 
     except Exception as e:
         print(f"Error during recommendation: {e}")
-        # (พิมพ์ Error ที่แท้จริงออกมา)
         raise HTTPException(status_code=500, detail=f"Internal Error: {e}") 
 
 @app.get("/")
