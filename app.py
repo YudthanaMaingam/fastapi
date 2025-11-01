@@ -7,6 +7,7 @@ import json
 # --- FastAPI Imports ---
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware # ✅ [เพิ่มใหม่] 1. Import CORS
 
 # --- Firebase Admin Imports ---
 import firebase_admin
@@ -190,6 +191,20 @@ def recommend_with_strategy(user_input_dict, strategy="auto", k=5):
 # 5. 🚀 FastAPI App
 # ----------------------------------------------------
 app = FastAPI()
+
+# ✅ [เพิ่มใหม่] 2. เพิ่มการตั้งค่า CORS
+origins = [
+    "*"  # อนุญาตทั้งหมด (เหมาะสำหรับ Development)
+    # "http://localhost",
+    # "http://localhost:8080",
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"], # อนุญาตทุก Method (POST, GET)
+    allow_headers=["*"], # อนุญาตทุก Header
+)
 
 # Pydantic model สำหรับรับข้อมูลจาก Flutter
 class RequestBody(BaseModel):
