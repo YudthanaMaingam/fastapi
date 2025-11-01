@@ -193,29 +193,38 @@ app = FastAPI()
 
 # Pydantic model สำหรับรับข้อมูลจาก Flutter
 class RequestBody(BaseModel):
-    userId: str
+    userId: str # รับ 'userId' (ถูกต้อง)
 
 # Endpoint หลักที่ Flutter จะเรียก
 @app.post("/get_recommendations")
 async def handle_recommendation_request(body: RequestBody):
     if not db:
-        raise HTTPException(status_code=503, detail="Firebase Admin is not initialized. Check serviceAccountKey.json.")
+        raise HTTPException(status_code=503, detail="Firebase Admin is not initialized.")
 
     try:
         # 1. ดึง Preferences จาก Firestore
-        doc_ref = db.collection('users').document(body.uid) # (แก้ 'users' ถ้าคุณเก็บไว้ที่อื่น)
+        
+        # (!!!) แก้ไขตรงนี้ (!!!)
+        # เราจะใช้ body.userId (ถูกต้อง)
+        doc_ref = db.collection('users').document(body.userId) 
         doc = doc_ref.get()
 
         if not doc.exists:
             raise HTTPException(status_code=404, detail="User not found")
             
-        # (แก้ 'preferences' ถ้าคุณเก็บไว้ใน field ชื่ออื่น)
-        user_preferences = doc.to_dict().get('genres') 
-        if not user_preferences:
-            raise HTTPException(status_code=404, detail="User preferences not found")
+        # (!!!) แก้ไขตรงนี้ (!!!)
+        # เปลี่ยน 'genres' (ที่เป็น Array)
+        # เป็น 'preferences' (ที่เป็น Map)
+        user_preferences_map = doc.to_dict().get('preference') 
+        
+        if not user_preferences_map:
+            raise HTTPException(status_code=404, detail="User 'preferences' field (Map) not found")
 
-        # 2. รันโมเดล Preference และส่งผลลัพธ์กลับ
-        recommendations = recommend_with_strategy(user_preferences, strategy="auto")
+        # 2. รันโมเดล Preference
+        # ส่ง Map ที่ได้จาก Firestore เข้าโมเดล
+        recommendations = recommend_with_strategy(user_preferences_map, strategy="auto")
+        
+        # 3. ส่งผลลัพธ์กลับ
         return {"recommendations": recommendations}
 
     except Exception as e:
