@@ -1,178 +1,222 @@
 import os
+import json
 import joblib
 import numpy as np
-import pandas as pd
-import json
 
-# --- FastAPI Imports ---
+# ------- FastAPI -------
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
-# --- Firebase Admin Imports ---
+# ------- Firebase (optional สำหรับอ่าน preference จาก Firestore) -------
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-# ----------------------------------------------------
-# 1. 🔑 Initialize Firebase Admin
-# ----------------------------------------------------
-try:
-    cred_path = os.path.join(os.path.dirname(__file__), 'serviceAccountKey.json')
-    cred = credentials.Certificate(cred_path)
-    firebase_admin.initialize_app(cred)
-    db = firestore.client()
-    print("Firebase Admin Initialized.")
-except Exception as e:
-    print(f"Error initializing Firebase Admin: {e}")
-    db = None 
+# =========================
+# 1) โหลดเมตา + โมเดล
+# =========================
+HERE = os.path.dirname(os.path.abspath(__file__))
 
-# ----------------------------------------------------
-# 2. 🧠 Load Models
-# ----------------------------------------------------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-all_genres_list = [] # (ประกาศเป็น global)
+with open(os.path.join(HERE, "model_data.json"), "r", encoding="utf-8") as f:
+    MD = json.load(f)
 
-try:
-    logreg_model = joblib.load(os.path.join(BASE_DIR, 'logreg_model.joblib'))
-    X_train_knn = np.load(os.path.join(BASE_DIR, 'X_train.npy'))
-    y_train_knn = np.load(os.path.join(BASE_DIR, 'y_train.npy')) # <-- นี่คือตัวเลข (indexes)
-    
-    with open(os.path.join(BASE_DIR, 'model_data.json'), 'r') as f:
-        json_data = json.load(f) 
-        all_genres_list = json_data['genres'] # <-- นี่คือพจนานุกรม (names)
+GENRES = MD["genres"]                    # ลำดับแนวทั้งหมด (16 แนว)
+FREQ_MAP = MD["freq_map"]                # {"Never":0,"Rarely":1,"Sometimes":2,"Very frequently":3}
+LABEL_NAMES = MD["label_names"]          # index -> genre name
+NAME2IDX = MD["name_to_index"]           # genre name -> index
 
-    from sklearn.neighbors import NearestNeighbors
-    knn_model = NearestNeighbors(n_neighbors=10, metric='cosine')
-    knn_model.fit(X_train_knn)
-    
-    print(f"All models loaded successfully! Found {len(all_genres_list)} genres.") 
+# Logistic Regression (Model-1: favorite-genre classification)
+LOGREG = joblib.load(os.path.join(HERE, "logreg_model.joblib"))
 
-except Exception as e:
-    print(f"CRITICAL: Error loading models: {e}")
+# KNN CF: fit จาก X_train (เวกเตอร์พฤติกรรมฟัง) + y_train (label เป็น index แนว)
+X_TRAIN = np.load(os.path.join(HERE, "X_train.npy"))
+Y_TRAIN = np.load(os.path.join(HERE, "y_train.npy"))
 
-# ----------------------------------------------------
-# 3. 📋 Copy Helper Functions from Notebook
-# ----------------------------------------------------
+from sklearn.neighbors import NearestNeighbors
+KNN = NearestNeighbors(n_neighbors=25, metric="cosine")
+KNN.fit(X_TRAIN)
 
-def preprocess_input(user_input, all_genres_list):
-    # (ฟังก์ชันนี้ถูกต้องแล้ว)
-    freq_map = {'Never': 0, 'Rarely': 1, 'Sometimes': 2, 'Very frequently': 3}
-    df_data = {genre: 0 for genre in all_genres_list}
-    for genre, freq in user_input.items():
-        if genre in df_data:
-            if isinstance(freq, str):
-                df_data[genre] = freq_map.get(freq, 0)
-            elif isinstance(freq, (int, float)):
-                df_data[genre] = freq
-    user_df = pd.DataFrame([df_data], columns=all_genres_list)
-    user_df = user_df.fillna(0).astype(int)
-    return user_df
+# =========================
+# 2) Utils
+# =========================
+def _coerce_freq(v):
+    """รับทั้งข้อความ Likert หรือเลข แล้วแปลงเป็น 0..3"""
+    if isinstance(v, (int, float)):
+        x = int(v)
+        return max(0, min(3, x))
+    if isinstance(v, str):
+        v = v.strip()
+        if v in FREQ_MAP:
+            return FREQ_MAP[v]
+        # เผื่อส่ง "Never (0)" จาก UI เข้ามา
+        for k in FREQ_MAP:
+            if v.startswith(k):
+                return FREQ_MAP[k]
+        # เผื่อส่ง "0","1","2","3" แบบ string
+        try:
+            return _coerce_freq(int(v))
+        except Exception:
+            return 0
+    return 0
 
-# ✅ [แก้ไข] BUG FIX อยู่นี่ครับ
-def knn_recommend_topk(user_vector, k=5):
-    if not hasattr(knn_model, 'kneighbors'):
-        raise Exception("knn_model is not fitted or loaded correctly")
-        
-    distances, indices = knn_model.kneighbors(user_vector)
-    
-    # 1. recommended_indexes คือ list ของตัวเลข (เช่น [11, 11, 14, 6, 11])
-    recommended_indexes = y_train_knn[indices[0]] 
-    
-    from collections import Counter
-    # 2. genre_counts คือ {11: 3, 14: 1, 6: 1}
-    genre_counts = Counter(recommended_indexes) 
-    
-    # 3. top_k_indexes คือ [11, 14, 6] (เป็น numpy.int32)
-    top_k_indexes = [genre_index for genre_index, count in genre_counts.most_common(k)]
-    
-    # 4. (!!!) แปลงตัวเลขกลับเป็นชื่อ (!!!)
-    #    เราต้องใช้ all_genres_list (global) เป็นตัวแปล
-    #    และใช้ int(idx) เพื่อแปลง numpy.int32 ให้เป็น Python int ธรรมดา
-    try:
-        top_k_names = [all_genres_list[int(idx)] for idx in top_k_indexes]
-    except IndexError:
-        # (กันเหนียว)
-        print(f"Error: Index out of bound. Indexes: {top_k_indexes}, List size: {len(all_genres_list)}")
-        return []
-        
-    # 5. คืนค่าเป็น List ของ String ที่ JSON-Safe
-    return top_k_names
+def preprocess_input(user_pref_dict):
+    """
+    รับ dict: {genre_name: Likert/number} -> เวกเตอร์ความยาวเท่าจำนวน GENRES
+    """
+    x = np.zeros(len(GENRES), dtype=float)
+    for g in GENRES:
+        if g in user_pref_dict:
+            x[NAME2IDX[g]] = _coerce_freq(user_pref_dict[g])
+    nonzero = int((x > 0).sum())
+    return x, nonzero
 
-def logreg_recommend(user_vector, k=5):
-    # (ฟังก์ชันนี้ถูกต้องแล้ว)
-    if not hasattr(logreg_model, 'predict_proba'):
-        raise Exception("logreg_model is not loaded correctly")
-    proba = logreg_model.predict_proba(user_vector)[0]
-    top_k_indices = np.argsort(proba)[::-1][:k]
-    top_k_genres = logreg_model.classes_[top_k_indices]
-    return list(top_k_genres)
+def normalize_minmax(vec):
+    v = np.asarray(vec, dtype=float)
+    lo, hi = v.min(), v.max()
+    if hi - lo < 1e-8:
+        return np.zeros_like(v)
+    return (v - lo) / (hi - lo + 1e-8)
 
-def recommend_with_strategy(user_input_dict, strategy="auto", k=5):
-    # (ฟังก์ชันนี้ถูกต้องแล้ว)
-    user_vector_df = preprocess_input(user_input_dict, all_genres_list) 
-    num_ratings = sum(1 for v in user_input_dict.values() if (isinstance(v, str) and v != 'Never') or (isinstance(v, int) and v > 0))
-    current_strategy = strategy
+def knn_scores(x, k=25):
+    """
+    ให้คะแนนทุกแนวด้วยการโหวตจากเพื่อนบ้าน (CF แบบง่าย)
+    คืนเวกเตอร์ความยาว = n_genres
+    """
+    # หาเพื่อนบ้าน
+    distances, indices = KNN.kneighbors([x], n_neighbors=min(k, len(X_TRAIN)))
+    idxs = indices[0]
+
+    # นับ label ของเพื่อนบ้านเป็น score
+    scores = np.zeros(len(GENRES), dtype=float)
+    for i in idxs:
+        c = int(Y_TRAIN[i])           # class index (0..15)
+        scores[c] += 1.0
+    # ทำให้เป็นเวกเตอร์เต็มตาม GENRES
+    return scores
+
+def recommend_with_strategy(user_pref_dict, strategy="auto", topk=3, return_debug=False):
+    """
+    กลยุทธ์เลือกโมเดล:
+      - auto: ถ้าผู้ใช้กรอก >= threshold (max(3, len(GENRES)//4)) -> logreg, น้อยกว่านั้น -> knn
+      - self/logreg/knn: บังคับใช้โมเดลนั้น ๆ
+    """
+    topk = max(1, min(topk, len(GENRES)))
+    x, nonzero = preprocess_input(user_pref_dict)
+
+    # ----- ตัดสินใจเลือกโมเดล -----
+    threshold = max(3, len(GENRES) // 4)  # 16 แนว -> 4
+    chosen = strategy
     if strategy == "auto":
-        if num_ratings == 0:
-            return []
-        elif num_ratings < 10:
-            current_strategy = "knn"
+        chosen = "logreg" if nonzero >= threshold else "knn"
+
+    # ----- คำนวณคะแนนทุกแนว (เวกเตอร์เต็ม) -----
+    if chosen == "self":
+        full = x.astype(float)
+        norm = normalize_minmax(full)
+
+    elif chosen == "logreg":
+        if nonzero == 0:
+            # fallback -> self
+            full = x.astype(float)
+            norm = normalize_minmax(full)
+            chosen = "self"
         else:
-            current_strategy = "logreg"
-    elif strategy == "self":
-        current_strategy = "knn"
-    if current_strategy == "knn":
-        return knn_recommend_topk(user_vector_df, k=k)
-    elif current_strategy == "logreg":
-        return logreg_recommend(user_vector_df, k=k)
+            proba = LOGREG.predict_proba([x])[0]  # ความยาว = n_classes (=16)
+            # map class index -> ตำแหน่งใน GENRES
+            # LOGREG.classes_ เป็น index 0..15 ตรงกับ LABEL_NAMES
+            class_index_to_pos = {int(i): i for i in range(len(GENRES))}
+            full = np.array([proba[class_index_to_pos[i]] for i in range(len(GENRES))], dtype=float)
+            # prob อยู่แล้ว -> clip 0..1
+            norm = np.clip(full, 0.0, 1.0)
+
+    elif chosen == "knn":
+        if nonzero == 0:
+            # เลี่ยงเวกเตอร์ศูนย์: ใส่ค่าเล็ก ๆ ให้เท่ากันทุกแนว
+            x = np.ones_like(x) * 1e-3
+        full = knn_scores(x, k=25)
+        norm = normalize_minmax(full)
+
     else:
-        return []
+        raise ValueError("Unknown strategy")
 
-# ----------------------------------------------------
-# 5. 🚀 FastAPI App
-# ----------------------------------------------------
+    order = np.argsort(-norm)[:topk]
+    items = [GENRES[i] for i in order]   # คืนเป็นชื่อแนว (ฝั่งเว็บนำไปค้นเพลงเอง)
+
+    if return_debug:
+        dbg = {"chosen_strategy": chosen, "nonzero": nonzero, "threshold": threshold}
+        return {"items": items, "used": dbg}
+    return {"items": items, "used": {"chosen_strategy": chosen}}
+
+# =========================
+# 3) FastAPI
+# =========================
 app = FastAPI()
-
-# (CORS Middleware - ถูกต้องแล้ว)
-origins = ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"]
 )
 
-# (Endpoint - ถูกต้องแล้ว)
-class RequestBody(BaseModel):
+# Firebase init (optional – ถ้ามี GOOGLE_APPLICATION_CREDENTIALS)
+if not firebase_admin._apps:
+    try:
+        cred_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        if cred_path and os.path.exists(cred_path):
+            firebase_admin.initialize_app(credentials.Certificate(cred_path))
+        else:
+            firebase_admin.initialize_app()  # ใช้ default credentials ได้ในบางสภาพแวดล้อม
+    except Exception:
+        # ถ้า init ไม่ได้ เราจะยังใช้ endpoint แบบส่ง preference ตรง ๆ ได้
+        pass
+
+# ----- Schemas -----
+class RecommendByUserId(BaseModel):
     userId: str
+    topk: int = 3
+    strategy: str = "auto"  # "auto" | "self" | "logreg" | "knn"
+
+class RecommendByPrefs(BaseModel):
+    preferences: dict   # {"EDM":3, "Hip hop":"Sometimes", ...}
+    topk: int = 3
+    strategy: str = "auto"
+
+# ----- Endpoints -----
+@app.get("/")
+def root():
+    return {"status": "ok", "n_genres": len(GENRES)}
 
 @app.post("/get_recommendations")
-async def handle_recommendation_request(body: RequestBody):
-    if not db:
-        raise HTTPException(status_code=503, detail="Firebase Admin is not initialized.")
-
+def get_recommendations(payload: RecommendByUserId):
+    """
+    เวอร์ชันใช้งานจริง: อ่าน preference จาก Firestore ที่ users/{uid}.preference
+    """
     try:
-        doc_ref = db.collection('users').document(body.userId)
-        doc = doc_ref.get()
+        if not firebase_admin._apps:
+            raise HTTPException(status_code=500, detail="Firebase not initialized")
 
+        db = firestore.client()
+        doc = db.collection("users").document(payload.userId).get()
         if not doc.exists:
             raise HTTPException(status_code=404, detail="User not found")
-            
-        user_preferences = doc.to_dict().get('preference') 
-        if not user_preferences:
-            raise HTTPException(status_code=404, detail="User preferences (Map) not found")
 
-        recommendations = recommend_with_strategy(user_preferences, strategy="auto")
-        
-        # 'recommendations' ตอนนี้จะเป็น List[str] ที่ปลอดภัย
-        return {"recommendations": recommendations}
+        data = doc.to_dict() or {}
+        prefs = data.get("preference") or {}
+        if not isinstance(prefs, dict):
+            raise HTTPException(status_code=400, detail="Invalid preference format")
 
+        res = recommend_with_strategy(prefs, strategy=payload.strategy, topk=payload.topk, return_debug=True)
+        return {"recommendations": res["items"], "used": res["used"]}
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"Error during recommendation: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal Error: {e}") 
+        raise HTTPException(status_code=500, detail=f"Internal Error: {e}")
 
-@app.get("/")
-def read_root():
-    return {"status": "Music Recommender API is running!"}
-
+@app.post("/get_recommendations_from_prefs")
+def get_recommendations_from_prefs(payload: RecommendByPrefs):
+    """
+    เวอร์ชันทดลอง/ทดสอบ: ส่ง preferences มาโดยตรง (ไม่ต้องพึ่ง Firestore)
+    """
+    try:
+        res = recommend_with_strategy(payload.preferences, strategy=payload.strategy, topk=payload.topk, return_debug=True)
+        return {"recommendations": res["items"], "used": res["used"]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal Error: {e}")
